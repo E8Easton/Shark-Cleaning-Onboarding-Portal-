@@ -1,16 +1,62 @@
-# React + Vite
+# Shark Cleaning LLC — Onboarding Portal
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Professional contractor onboarding for **technicians** and **door-to-door sales reps**: video training, operations manuals, agreement sign-off, and sales tracking.
 
-Currently, two official plugins are available:
+## Quick start
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+cp .env.example .env
+# Set VITE_OWNER_EMAILS to your email for Content Studio access
+npm run dev
+```
 
-## React Compiler
+Open [http://localhost:5173](http://localhost:5173).
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### How to use
 
-## Expanding the ESLint configuration
+**Home screen — 3 buttons:**
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+1. **Technician** or **Door-to-Door Sales** → enter your name → start the training path
+2. **Admin / Owner** → open the admin dashboard (edit videos, add steps, see completions)
+
+Progress is saved by **name + role**, so the same person can return and continue later.
+
+### Admin (add videos & manage steps)
+
+Click **Admin / Owner**, then **Admin dashboard** in the sidebar:
+
+- **Completions** tab — see every trainee, progress %, and who fully finished
+- **Edit training content** tab — add steps 8, 9, 10…, delete steps, edit page text, videos, manuals, and agreements
+
+## Deploy (Vercel)
+
+1. Push to GitHub.
+2. Import the repo in [Vercel](https://vercel.com).
+3. Add environment variables from `.env.example`.
+4. Deploy — `vercel.json` handles SPA routing.
+
+## Supabase (optional)
+
+For data that persists across browsers and devices:
+
+1. Create a [Supabase](https://supabase.com) project.
+2. Run `supabase/schema.sql` in the SQL Editor.
+3. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` to `.env` and Vercel.
+
+Without Supabase, everything saves to **localStorage** in the browser (fine for demos and single-device use).
+
+## Scripts
+
+| Command        | Description              |
+|----------------|--------------------------|
+| `npm run dev`  | Local development server |
+| `npm run build`| Production build         |
+| `npm run preview` | Preview production build |
+
+## Stack
+
+- React 19 + Vite 8
+- Tailwind CSS 4
+- Lucide icons
+- Optional Supabase for cloud storage

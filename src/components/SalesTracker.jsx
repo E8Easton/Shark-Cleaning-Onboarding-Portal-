@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { PlusCircle, BarChart3, TrendingUp, DollarSign, Eye, EyeOff, LayoutGrid, Calendar, Percent } from "lucide-react";
 
-export default function SalesTracker({ initialLogs = [] }) {
+export default function SalesTracker({ userId = "default", initialLogs = [], onComplete, isCompleted }) {
+  const storageKey = `shark_sales_logs_${userId}`;
   const [logs, setLogs] = useState(() => {
-    const saved = localStorage.getItem("shark_sales_logs");
+    const saved = localStorage.getItem(storageKey);
     return saved ? JSON.parse(saved) : initialLogs;
   });
 
@@ -16,8 +17,8 @@ export default function SalesTracker({ initialLogs = [] }) {
   const [showAddForm, setShowAddForm] = useState(false);
 
   useEffect(() => {
-    localStorage.setItem("shark_sales_logs", JSON.stringify(logs));
-  }, [logs]);
+    localStorage.setItem(storageKey, JSON.stringify(logs));
+  }, [logs, storageKey]);
 
   // Aggregate stats
   const totalDoors = logs.reduce((sum, item) => sum + Number(item.doors || 0), 0);
@@ -308,6 +309,14 @@ export default function SalesTracker({ initialLogs = [] }) {
           )}
         </div>
       </div>
+
+      {!isCompleted && logs.length > 0 && (
+        <div className="flex justify-end">
+          <button type="button" onClick={() => onComplete?.()} className="btn btn-accent text-sm">
+            Complete sales tracker step
+          </button>
+        </div>
+      )}
 
       {/* Historical Logs List */}
       <div className="glass-card p-5">

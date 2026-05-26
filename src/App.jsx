@@ -1,139 +1,109 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { DEFAULT_TRACKS, INITIAL_USER_PROGRESS } from "./data/initialData";
 import LoginView from "./views/LoginView";
 import DashboardView from "./views/DashboardView";
 import Sidebar from "./components/Sidebar";
-import AdminDashboard from "./components/AdminDashboard";
+import AdminPanel from "./components/AdminPanel";
+import { makeUserId } from "./lib/users";
+import { mergeTracksWithDefaults, ensureCoreTracks } from "./lib/restoreDefaults";
+import {
+  loadTracks,
+  saveTracks,
+  loadUsers,
+  saveUsers,
+  loadProgress,
+  saveProgress,
+} from "./lib/storage";
+
+const ADMIN_USER = {
+  id: "admin",
+  name: "Admin / Owner",
+  role: "admin",
+};
 
 export default function App() {
-  // Global Users State - persisted in localStorage
-  const [users, setUsers] = useState(() => {
-    const saved = localStorage.getItem("shark_registered_users");
-    if (saved) return JSON.parse(saved);
-    
-    // Default mock users for easy grading / testing
-    return [
-      { name: "Tony Soprano", email: "tech@sharkcleaning.com", role: "technician" },
-      { name: "Paulie Walnuts", email: "sales@sharkcleaning.com", role: "sales" }
-    ];
-  });
-
-  // Global Tracks (Curriculum) State - persisted in localStorage so admin edits are persistent
-  const [tracks, setTracks] = useState(() => {
-    const saved = localStorage.getItem("shark_curriculum_tracks");
-    return saved ? JSON.parse(saved) : DEFAULT_TRACKS;
-  });
-
+  const [hydrated, setHydrated] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [tracks, setTracks] = useState(DEFAULT_TRACKS);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentProgress, setCurrentProgress] = useState(INITIAL_USER_PROGRESS);
   const [activeModuleId, setActiveModuleId] = useState("");
   const [viewAdmin, setViewAdmin] = useState(false);
 
-  // Sync users and tracks to local storage
   useEffect(() => {
-    localStorage.setItem("shark_registered_users", JSON.stringify(users));
-  }, [users]);
+    (async () => {
+      const [loadedUsers, loadedTracks] = await Promise.all([loadUsers(), loadTracks()]);
+      setUsers(loadedUsers.filter((u) => u.role !== "admin"));
+      const restored = ensureCoreTracks(mergeTracksWithDefaults(loadedTracks));
+      setTracks(restored);
+      if (JSON.stringify(restored) !== JSON.stringify(loadedTracks)) {
+        saveTracks(restored);
+      }
+      setHydrated(true);
+    })();
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem("shark_curriculum_tracks", JSON.stringify(tracks));
-  }, [tracks]);
+    if (!hydrated) return;
+    saveUsers(users);
+  }, [users, hydrated]);
 
-  // Load progress when a user logs in
-  const loadUserProgress = (email) => {
-    const savedProgress = localStorage.getItem(`shark_progress_${email}`);
-    if (savedProgress) {
-      const parsed = JSON.parse(savedProgress);
-      setCurrentProgress(parsed);
-      return parsed;
-    } else {
-      localStorage.setItem(`shark_progress_${email}`, JSON.stringify(INITIAL_USER_PROGRESS));
-      setCurrentProgress(INITIAL_USER_PROGRESS);
-      return INITIAL_USER_PROGRESS;
-    }
+  useEffect(() => {
+    if (!hydrated) return;
+    saveTracks(tracks);
+  }, [tracks, hydrated]);
+
+  const pickFirstModule = useCallback((track, progress) => {
+    if (!track?.modules?.length) return "";
+    const firstOpen = track.modules.find((m) => !progress.completedModules.includes(m.id));
+    return firstOpen ? firstOpen.id : track.modules[0].id;
+  }, []);
+
+  const loadUserProgress = async (userId) => {
+    const saved = (await loadProgress(userId)) || { ...INITIAL_USER_PROGRESS };
+    setCurrentProgress(saved);
+    return saved;
   };
 
-  // Sync current user's progress to local storage when changed
-  const saveUserProgress = (updatedProgress) => {
+  const saveUserProgress = async (updatedProgress) => {
     if (!currentUser || currentUser.role === "admin") return;
     setCurrentProgress(updatedProgress);
-    localStorage.setItem(`shark_progress_${currentUser.email}`, JSON.stringify(updatedProgress));
-    
-    // Update the progress reference inside our users list too for admin view auditing
-    setUsers(prev => prev.map(u => {
-      if (u.email === currentUser.email) {
-        return { ...u, progress: updatedProgress };
-      }
-      return u;
-    }));
+    await saveProgress(currentUser.id, updatedProgress);
+    setUsers((prev) =>
+      prev.map((u) =>
+        u.id === currentUser.id ? { ...u, progress: updatedProgress } : u
+      )
+    );
   };
 
-  // Handle Recruit Register
-  const handleRegister = (newUser) => {
-    const exists = users.find(u => u.email === newUser.email);
-    if (exists) return false;
+  const handleEnterTrainee = async (role, name) => {
+    const id = makeUserId(name, role);
+    let user = users.find((u) => u.id === id);
 
-    // Register user
-    const updatedUsers = [...users, newUser];
-    setUsers(updatedUsers);
-
-    // Set as active user
-    setCurrentUser(newUser);
-    const initialProg = {
-      completedModules: [],
-      completedTimes: {},
-      isFullyCompleted: false,
-      signedName: "",
-      signedDate: "",
-      signedIp: ""
-    };
-    
-    // Initialize progress file
-    setCurrentProgress(initialProg);
-    localStorage.setItem(`shark_progress_${newUser.email}`, JSON.stringify(initialProg));
-
-    // Load active track
-    const activeTrack = tracks.find(t => t.role === newUser.role);
-    if (activeTrack && activeTrack.modules.length > 0) {
-      setActiveModuleId(activeTrack.modules[0].id);
-    } else {
-      setActiveModuleId("");
+    if (!user) {
+      user = {
+        id,
+        name: name.trim(),
+        role,
+        startedAt: new Date().toISOString(),
+      };
+      setUsers((prev) => [...prev, user]);
     }
+
+    setCurrentUser(user);
+    const prog = await loadUserProgress(id);
+    const activeTrack = tracks.find((t) => t.role === role);
+    setActiveModuleId(pickFirstModule(activeTrack, prog));
     setViewAdmin(false);
-    return true;
   };
 
-  // Handle Login
-  const handleLogin = (email, isAdmin) => {
-    if (isAdmin) {
-      const adminUser = { name: "Administrator", email: "admin@sharkcleaning.com", role: "admin" };
-      setCurrentUser(adminUser);
-      setViewAdmin(true);
-      setActiveModuleId("");
-      return true;
-    }
-
-    const matchedUser = users.find(u => u.email === email);
-    if (!matchedUser) return false;
-
-    // Set active user
-    setCurrentUser(matchedUser);
-    const userProg = loadUserProgress(matchedUser.email);
-
-    // Set active module
-    const userTrack = tracks.find(t => t.role === matchedUser.role);
-    if (userTrack && userTrack.modules.length > 0) {
-      // Find the first uncompleted module or default to first
-      const firstUncompleted = userTrack.modules.find(m => !userProg.completedModules.includes(m.id));
-      setActiveModuleId(firstUncompleted ? firstUncompleted.id : userTrack.modules[0].id);
-    } else {
-      setActiveModuleId("");
-    }
-    
-    setViewAdmin(false);
-    return true;
+  const handleEnterAdmin = () => {
+    setCurrentUser(ADMIN_USER);
+    setCurrentProgress(INITIAL_USER_PROGRESS);
+    setActiveModuleId("");
+    setViewAdmin(true);
   };
 
-  // Handle Logout
   const handleLogout = () => {
     setCurrentUser(null);
     setCurrentProgress(INITIAL_USER_PROGRESS);
@@ -141,7 +111,6 @@ export default function App() {
     setViewAdmin(false);
   };
 
-  // Complete a Module
   const handleCompleteModule = (moduleId, extraData = {}) => {
     if (!currentUser || currentUser.role === "admin") return;
 
@@ -149,98 +118,139 @@ export default function App() {
       ? currentProgress.completedModules
       : [...currentProgress.completedModules, moduleId];
 
-    const completedTimes = {
-      ...currentProgress.completedTimes,
-      [moduleId]: new Date().toISOString()
-    };
-
     const updatedProgress = {
       ...currentProgress,
       completedModules,
-      completedTimes,
-      ...extraData // signedName, signedDate, signedIp, etc.
+      completedTimes: {
+        ...currentProgress.completedTimes,
+        [moduleId]: new Date().toISOString(),
+      },
+      ...extraData,
     };
 
     saveUserProgress(updatedProgress);
   };
 
-  // ADMIN: Add Track
+  const renumberModules = (modules) =>
+    modules.map((m, i) => ({
+      ...m,
+      title: `${i + 1}. ${m.title.replace(/^\d+\.\s*/, "")}`,
+    }));
+
   const handleAddTrack = (newTrack) => {
-    setTracks([...tracks, newTrack]);
+    setTracks((prev) => [...prev, newTrack]);
   };
 
-  // ADMIN: Delete Track
   const handleDeleteTrack = (trackId) => {
-    setTracks(tracks.filter(t => t.id !== trackId));
+    setTracks((prev) => prev.filter((t) => t.id !== trackId));
   };
 
-  // ADMIN: Add Module Step
-  const handleAddModule = (trackId, newModule) => {
-    setTracks(tracks.map(t => {
-      if (t.id === trackId) {
-        return {
-          ...t,
-          modules: [...t.modules, newModule]
-        };
-      }
-      return t;
-    }));
+  const handleAddModule = (trackId, newModule, insertAt) => {
+    setTracks((prev) =>
+      prev.map((t) => {
+        if (t.id !== trackId) return t;
+        const modules = [...t.modules];
+        if (typeof insertAt === "number" && insertAt >= 0) {
+          modules.splice(insertAt, 0, newModule);
+        } else {
+          modules.push(newModule);
+        }
+        return { ...t, modules: renumberModules(modules) };
+      })
+    );
   };
 
-  // ADMIN: Delete Module Step
   const handleDeleteModule = (trackId, moduleId) => {
-    setTracks(tracks.map(t => {
-      if (t.id === trackId) {
-        return {
-          ...t,
-          modules: t.modules.filter(m => m.id !== moduleId)
-        };
-      }
-      return t;
-    }));
+    setTracks((prev) =>
+      prev.map((t) => {
+        if (t.id !== trackId) return t;
+        const modules = t.modules.filter((m) => m.id !== moduleId);
+        return { ...t, modules: renumberModules(modules) };
+      })
+    );
   };
 
-  // Find active track for logged in recruit
-  const activeTrack = currentUser ? (tracks.find(t => t.role === currentUser.role) || tracks[0]) : null;
+  const handleRestoreDefaultSteps = () => {
+    setTracks((prev) => {
+      const restored = ensureCoreTracks(mergeTracksWithDefaults(prev));
+      saveTracks(restored);
+      return restored;
+    });
+  };
 
-  // Enrich standard users list with progress from localStorage for Admin audit matrix
-  const enrichedUsers = users.map(u => {
-    const saved = localStorage.getItem(`shark_progress_${u.email}`);
-    return {
-      ...u,
-      progress: saved ? JSON.parse(saved) : INITIAL_USER_PROGRESS
-    };
-  });
+  const handleUpdateModule = (trackId, moduleId, updates) => {
+    setTracks((prev) =>
+      prev.map((t) =>
+        t.id === trackId
+          ? {
+              ...t,
+              modules: t.modules.map((m) =>
+                m.id === moduleId ? { ...m, ...updates } : m
+              ),
+            }
+          : t
+      )
+    );
+  };
+
+  const activeTrack =
+    currentUser && currentUser.role !== "admin"
+      ? tracks.find((t) => t.role === currentUser.role) || tracks[0]
+      : null;
+
+  const isAdmin = currentUser?.role === "admin";
+
+  if (!hydrated) {
+    return (
+      <div className="login-scene">
+        <p className="text-text-secondary text-sm animate-pulse">Loading portal…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">
       {currentUser ? (
         <>
-          {/* Navigational Sidebar */}
-          <Sidebar 
+          <Sidebar
             user={currentUser}
             track={activeTrack}
             activeModuleId={activeModuleId}
-            onSelectModule={setActiveModuleId}
+            onSelectModule={(id) => {
+              setActiveModuleId(id);
+              setViewAdmin(false);
+            }}
             progress={currentProgress}
             onLogout={handleLogout}
-            setViewAdmin={setViewAdmin}
+            isAdmin={isAdmin}
             viewAdmin={viewAdmin}
+            setViewAdmin={setViewAdmin}
           />
-          
-          {/* Main Work Space */}
+
           <main className="main-content">
-            {viewAdmin ? (
-              <AdminDashboard 
-                usersList={enrichedUsers}
+            {isAdmin && viewAdmin ? (
+              <AdminPanel
+                users={users}
                 tracks={tracks}
+                onSaveTracks={saveTracks}
                 onAddTrack={handleAddTrack}
+                onDeleteTrack={handleDeleteTrack}
                 onAddModule={handleAddModule}
                 onDeleteModule={handleDeleteModule}
-                onDeleteTrack={handleDeleteTrack}
+                onUpdateModule={handleUpdateModule}
+                onRestoreDefaultSteps={handleRestoreDefaultSteps}
               />
+            ) : isAdmin ? (
+              <div className="glass-card p-8 text-center space-y-4 max-w-lg mx-auto">
+                <p className="text-text-secondary text-sm">
+                  Open <strong className="text-white">Admin Dashboard</strong> from the sidebar to edit training steps or view who completed onboarding.
+                </p>
+                <button type="button" className="btn btn-accent" onClick={() => setViewAdmin(true)}>
+                  Open Admin Dashboard
+                </button>
+              </div>
             ) : (
-              <DashboardView 
+              <DashboardView
                 user={currentUser}
                 track={activeTrack}
                 activeModuleId={activeModuleId}
@@ -252,9 +262,12 @@ export default function App() {
           </main>
         </>
       ) : (
-        <LoginView 
-          onLogin={handleLogin}
-          onRegister={handleRegister}
+        <LoginView
+          onEnterTrainee={handleEnterTrainee}
+          onEnterAdmin={handleEnterAdmin}
+          extraTracks={tracks.filter(
+            (t) => t.role !== "technician" && t.role !== "sales" && t.role !== "admin"
+          )}
         />
       )}
     </div>

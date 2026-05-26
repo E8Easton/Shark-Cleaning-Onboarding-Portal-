@@ -1,273 +1,259 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Play, Pause, RotateCcw, CheckCircle2, Lock, ShieldAlert, FastForward } from "lucide-react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { CheckCircle2, Lock, ExternalLink } from "lucide-react";
+
+function parseDuration(durationStr) {
+  if (!durationStr) return 300;
+  const parts = String(durationStr).split(":");
+  if (parts.length < 2) return 300;
+  const mins = parseInt(parts[0], 10) || 0;
+  const secs = parseInt(parts[1], 10) || 0;
+  return mins * 60 + secs;
+}
+
+function getYouTubeId(url) {
+  if (!url) return null;
+  const patterns = [
+    /youtube\.com\/embed\/([^?&]+)/,
+    /youtube\.com\/watch\?v=([^&]+)/,
+    /youtu\.be\/([^?&]+)/,
+    /youtube\.com\/shorts\/([^?&]+)/,
+  ];
+  for (const p of patterns) {
+    const m = url.match(p);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+function isDirectVideo(url) {
+  return /\.(mp4|webm|ogg)(\?|$)/i.test(url || "");
+}
 
 export default function VideoPlayer({ module, onComplete, isCompleted }) {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [maxWatchedTime, setMaxWatchedTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [autoUnlocked, setAutoUnlocked] = useState(false);
-  const videoInterval = useRef(null);
+  const [watchedSeconds, setWatchedSeconds] = useState(isCompleted ? parseDuration(module.duration) : 0);
+  const [markedComplete, setMarkedComplete] = useState(isCompleted);
+  const iframeRef = useRef(null);
+  const playerRef = useRef(null);
+  const timerRef = useRef(null);
 
-  // Parse duration string e.g. "5:30" to total seconds
+  const requiredSeconds = parseDuration(module.duration);
+  const youtubeId = getYouTubeId(module.videoUrl);
+  const directVideo = isDirectVideo(module.videoUrl);
+  const hasEmbed = Boolean(youtubeId || directVideo);
+  const watchPercent = Math.min(100, Math.round((watchedSeconds / requiredSeconds) * 100));
+  const canComplete = isCompleted || markedComplete || watchedSeconds >= requiredSeconds * 0.9;
+
   useEffect(() => {
-    if (module) {
-      const parts = module.duration.split(":");
-      const mins = parseInt(parts[0], 10);
-      const secs = parseInt(parts[1], 10);
-      const totalSecs = mins * 60 + secs;
-      setDuration(totalSecs);
-      setCurrentTime(0);
-      setMaxWatchedTime(isCompleted ? totalSecs : 0);
-      setIsPlaying(false);
-      setAutoUnlocked(isCompleted);
+    setWatchedSeconds(isCompleted ? requiredSeconds : 0);
+    setMarkedComplete(isCompleted);
+  }, [module.id, isCompleted, requiredSeconds]);
+
+  const handleComplete = useCallback(() => {
+    if (!markedComplete && !isCompleted) {
+      setMarkedComplete(true);
+      onComplete();
     }
-  }, [module, isCompleted]);
+  }, [markedComplete, isCompleted, onComplete]);
 
-  // Handle Play/Pause
-  const togglePlay = () => {
-    setIsPlaying(!isPlaying);
-  };
-
-  // Timer simulation for our simulated video player
+  // YouTube IFrame API
   useEffect(() => {
-    if (isPlaying) {
-      videoInterval.current = setInterval(() => {
-        setCurrentTime((prev) => {
-          const next = prev + 1;
-          if (next >= duration) {
-            clearInterval(videoInterval.current);
-            setIsPlaying(false);
-            setAutoUnlocked(true);
-            onComplete(); // Trigger completion!
-            return duration;
-          }
-          setMaxWatchedTime((max) => Math.max(max, next));
-          return next;
-        });
-      }, 1000);
+    if (!youtubeId || isCompleted) return;
+
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    const firstScript = document.getElementsByTagName("script")[0];
+    firstScript.parentNode.insertBefore(tag, firstScript);
+
+    const initPlayer = () => {
+      if (!iframeRef.current || playerRef.current) return;
+      playerRef.current = new window.YT.Player(iframeRef.current, {
+        videoId: youtubeId,
+        playerVars: { rel: 0, modestbranding: 1 },
+        events: {
+          onStateChange: (event) => {
+            if (event.data === window.YT.PlayerState.PLAYING) {
+              timerRef.current = setInterval(() => {
+                const t = playerRef.current?.getCurrentTime?.() ?? 0;
+                setWatchedSeconds((prev) => Math.max(prev, Math.floor(t)));
+              }, 1000);
+            } else if (event.data === window.YT.PlayerState.ENDED) {
+              clearInterval(timerRef.current);
+              setWatchedSeconds(requiredSeconds);
+              handleComplete();
+            } else {
+              clearInterval(timerRef.current);
+            }
+          },
+        },
+      });
+    };
+
+    if (window.YT?.Player) {
+      initPlayer();
     } else {
-      clearInterval(videoInterval.current);
+      window.onYouTubeIframeAPIReady = initPlayer;
     }
 
-    return () => clearInterval(videoInterval.current);
-  }, [isPlaying, duration, onComplete]);
+    return () => {
+      clearInterval(timerRef.current);
+      try {
+        playerRef.current?.destroy?.();
+      } catch {
+        /* ignore */
+      }
+      playerRef.current = null;
+    };
+  }, [youtubeId, isCompleted, requiredSeconds, handleComplete]);
 
-  // Scrub handler - prevents scrubbing PAST max watched time
-  const handleScrubChange = (e) => {
-    const targetVal = parseInt(e.target.value, 10);
-    if (targetVal <= maxWatchedTime) {
-      setCurrentTime(targetVal);
-    } else {
-      // Trigger subtle vibration or visual feedback
-    }
+  // Direct video progress
+  const onVideoTimeUpdate = (e) => {
+    const t = Math.floor(e.target.currentTime);
+    setWatchedSeconds((prev) => Math.max(prev, t));
+    if (t >= requiredSeconds * 0.95) handleComplete();
   };
-
-  // Skip to end for developer testing
-  const triggerDevBypass = () => {
-    setCurrentTime(duration - 2);
-    setMaxWatchedTime(duration - 2);
-    setIsPlaying(true);
-  };
-
-  const formatTime = (secs) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}:${s < 10 ? "0" : ""}${s}`;
-  };
-
-  const progressPercentage = (currentTime / duration) * 100 || 0;
-  const maxProgressPercentage = (maxWatchedTime / duration) * 100 || 0;
 
   return (
-    <div className="animate-fade-in">
-      <div className="flex justify-between items-center mb-3">
-        <h3 className="font-display text-xl font-bold flex items-center gap-2">
-          {module.title}
-          {isCompleted && <CheckCircle2 className="text-success w-5 h-5" />}
-        </h3>
-        
-        {/* Dev tool helper */}
+    <div className="animate-fade-in space-y-4">
+      <div className="flex flex-wrap justify-between items-start gap-3">
+        <div>
+          <h3 className="font-display text-xl font-bold text-white flex items-center gap-2">
+            {module.title}
+            {isCompleted && <CheckCircle2 className="text-success w-5 h-5" />}
+          </h3>
+          <p className="text-text-secondary text-sm mt-1 max-w-2xl leading-relaxed">{module.description}</p>
+        </div>
         {!isCompleted && (
-          <button 
-            onClick={triggerDevBypass}
-            className="btn btn-outline btn-secondary" 
-            style={{ padding: "0.25rem 0.6rem", fontSize: "0.75rem", display: "flex", gap: "4px" }}
-            title="Fast forward to last 2 seconds for quick grading review"
-          >
-            <FastForward className="w-3.5 h-3.5 text-orange" />
-            <span>Dev Fast Watch</span>
-          </button>
+          <span className="badge badge-video text-[10px]">
+            {watchPercent}% watched
+          </span>
         )}
       </div>
 
-      <p className="text-text-secondary text-sm mb-4 leading-relaxed">{module.description}</p>
-
-      {/* High Fidelity Simulated Video Player Frame */}
-      <div className="video-wrapper mb-4">
-        {/* Animated Background Simulation simulating a training lecture */}
-        <div 
-          className="absolute inset-0 flex flex-col justify-between p-6 select-none"
-          style={{
-            background: `radial-gradient(circle at center, rgba(31,162,225,0.15) 0%, rgba(6,14,27,0.95) 100%)`,
-          }}
-        >
-          {/* Top Logo & Watermark */}
-          <div className="flex justify-between items-center opacity-75">
-            <div className="flex items-center gap-2">
-              <div 
-                className="w-2.5 h-2.5 rounded-full bg-red-600" 
-                style={{
-                  backgroundColor: isPlaying ? "#ef4444" : "#94a3b8",
-                  boxShadow: isPlaying ? "0 0 8px #ef4444" : "none"
-                }}
-              />
-              <span className="text-xs uppercase tracking-widest text-text-secondary font-mono">
-                {isPlaying ? "Live Training Stream" : "Onboarding Paused"}
-              </span>
-            </div>
-            <span className="text-xs font-mono text-text-muted">SHARK_ACADEMY_V.1.0</span>
-          </div>
-
-          {/* Core Visual Action Indicator */}
-          <div className="flex flex-col items-center justify-center flex-1 gap-3">
-            <div 
-              className="w-20 h-20 rounded-full flex items-center justify-center bg-navy-card border border-navy-border cursor-pointer transition-all duration-300"
-              style={{
-                boxShadow: isPlaying ? "0 0 25px rgba(31,162,225,0.4)" : "none",
-                borderColor: isPlaying ? "var(--sky-blue)" : "var(--navy-border)",
-              }}
-              onClick={togglePlay}
-            >
-              {isPlaying ? (
-                <Pause className="w-8 h-8 text-sky-blue" />
-              ) : (
-                <Play className="w-8 h-8 text-orange translate-x-0.5" />
-              )}
-            </div>
-            
-            <p className="text-sm font-semibold tracking-wide text-center">
-              {isPlaying ? "Watching Equipment & Safety Procedures..." : "Click to Resume Training Video"}
-            </p>
-            <p className="text-xs text-text-muted max-w-sm text-center">
-              *Seek-lock is active. You cannot fast-forward past sections you haven't watched yet.
+      <div className="video-wrapper">
+        {youtubeId ? (
+          <div ref={iframeRef} id={`yt-${module.id}`} className="w-full h-full" />
+        ) : directVideo ? (
+          <video
+            src={module.videoUrl}
+            controls
+            className="w-full h-full"
+            onTimeUpdate={onVideoTimeUpdate}
+            onEnded={handleComplete}
+          />
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center bg-navy-dark">
+            <p className="text-orange font-display font-bold text-lg mb-2">Video coming soon</p>
+            <p className="text-text-secondary text-sm max-w-md">
+              Your training video will appear here once it is added in Content Studio.
+              Paste a YouTube embed link or upload an .mp4 URL.
             </p>
           </div>
-
-          {/* Bottom Player Overlay Bar */}
-          <div className="flex flex-col gap-2 p-2 bg-navy-deep/80 rounded-md backdrop-filter blur-sm border border-navy-border/50">
-            {/* Range Scrub Bar */}
-            <div className="relative w-full h-1 bg-navy-light rounded-full overflow-hidden">
-              {/* Max allowed watch limit */}
-              <div 
-                className="absolute top-0 left-0 h-full bg-navy-border"
-                style={{ width: `${maxProgressPercentage}%` }}
-              />
-              {/* Current track progress */}
-              <div 
-                className="absolute top-0 left-0 h-full bg-sky-blue transition-all duration-150"
-                style={{ width: `${progressPercentage}%` }}
-              />
-            </div>
-
-            {/* Input Slider for Scrubbing */}
-            <input 
-              type="range"
-              min={0}
-              max={duration}
-              value={currentTime}
-              onChange={handleScrubChange}
-              className="w-full cursor-pointer opacity-80 hover:opacity-100 accent-sky-blue"
-              style={{ height: "4px", margin: "-6px 0" }}
-            />
-
-            {/* Times & Status */}
-            <div className="flex justify-between items-center text-xs font-mono text-text-secondary">
-              <span>{formatTime(currentTime)} / {formatTime(duration)}</span>
-              <span className="flex items-center gap-1">
-                {isCompleted ? (
-                  <span className="text-success flex items-center gap-1 font-bold">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> Completed
-                  </span>
-                ) : (
-                  <span className="text-orange flex items-center gap-1">
-                    <Lock className="w-3.5 h-3.5" /> Locked Forward
-                  </span>
-                )}
-              </span>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* extra highlights below player (e.g. equipment list, safety corrections) */}
+      {/* Progress bar */}
+      {!isCompleted && hasEmbed && (
+        <div className="space-y-2">
+          <div className="h-1.5 w-full bg-navy-light rounded-full overflow-hidden">
+            <div
+              className="h-full bg-sky-blue transition-all duration-300"
+              style={{ width: `${watchPercent}%` }}
+            />
+          </div>
+          <p className="text-xs text-text-muted flex items-center gap-1">
+            <Lock className="w-3.5 h-3.5 text-orange" />
+            Watch at least 90% of this module to unlock the next step.
+          </p>
+        </div>
+      )}
+
+      {!isCompleted && canComplete && !markedComplete && (
+        <button type="button" onClick={handleComplete} className="btn btn-primary text-sm">
+          Mark module complete
+        </button>
+      )}
+
+      {module.videoUrl && !youtubeId && !directVideo && (
+        <a
+          href={module.videoUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn btn-outline text-xs inline-flex"
+        >
+          Open video link <ExternalLink className="w-3.5 h-3.5" />
+        </a>
+      )}
+
       {module.extraContent && (
-        <div className="glass-card p-4 animate-fade-in" style={{ borderLeftWidth: "4px", borderLeftColor: "var(--sky-blue)" }}>
-          {module.extraContent.equipmentList && (
-            <div>
-              <h4 className="font-display font-bold text-sm uppercase tracking-wide text-sky-blue mb-2">Training Equipment Spotlight:</h4>
-              <ul className="text-sm space-y-2">
-                {module.extraContent.equipmentList.map((eq, i) => (
-                  <li key={i}>
-                    <strong>⚙️ {eq.name}</strong> — <span className="text-text-secondary">{eq.desc}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+        <ModuleExtras extra={module.extraContent} />
+      )}
+    </div>
+  );
+}
 
-          {module.extraContent.steps && (
-            <div>
-              <h4 className="font-display font-bold text-sm uppercase tracking-wide text-sky-blue mb-2">SOP Workflow Steps:</h4>
-              <ol className="text-sm space-y-2">
-                {module.extraContent.steps.map((st, i) => (
-                  <li key={i} className="text-text-secondary">
-                    <strong className="text-text-primary">{st.step}</strong>: {st.detail}
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-
-          {module.extraContent.hazards && (
-            <div>
-              <h4 className="font-display font-bold text-sm uppercase tracking-wide text-orange mb-2">⚠️ Safety Hazard Corrections:</h4>
-              <ul className="text-sm space-y-2">
-                {module.extraContent.hazards.map((hz, i) => (
-                  <li key={i} className="text-text-secondary">
-                    <strong className="text-error">{hz.hazard}</strong>: {hz.correction}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {module.extraContent.tips && (
-            <div>
-              <h4 className="font-display font-bold text-sm uppercase tracking-wide text-orange mb-2">📈 1099 Profit Maximizers:</h4>
-              <ul className="text-sm space-y-2">
-                {module.extraContent.tips.map((tp, i) => (
-                  <li key={i} className="text-text-secondary">
-                    <strong className="text-text-primary">🔹 {tp.title}</strong> — {tp.text}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {module.extraContent.scriptStages && (
-            <div>
-              <h4 className="font-display font-bold text-sm uppercase tracking-wide text-sky-blue mb-2">🔥 Pitch Breakdown & Scripting:</h4>
-              <div className="space-y-3">
-                {module.extraContent.scriptStages.map((sc, i) => (
-                  <div key={i} className="text-xs bg-navy-dark p-2.5 rounded border border-navy-border/50">
-                    <strong className="text-orange uppercase tracking-wide text-[10px] block mb-1">{sc.stage}</strong>
-                    <span className="italic text-text-primary">"{sc.detail}"</span>
-                  </div>
-                ))}
+function ModuleExtras({ extra }) {
+  return (
+    <div className="glass-card p-4 border-l-4 border-l-sky-blue space-y-4">
+      {extra.equipmentList && (
+        <div>
+          <h4 className="font-display font-bold text-sm uppercase text-sky-blue mb-2">Equipment spotlight</h4>
+          <ul className="text-sm space-y-2">
+            {extra.equipmentList.map((eq, i) => (
+              <li key={i}>
+                <strong className="text-white">{eq.name}</strong>
+                <span className="text-text-secondary"> — {eq.desc}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {extra.steps && (
+        <div>
+          <h4 className="font-display font-bold text-sm uppercase text-sky-blue mb-2">SOP workflow</h4>
+          <ol className="text-sm space-y-2 list-decimal list-inside text-text-secondary">
+            {extra.steps.map((st, i) => (
+              <li key={i}>
+                <strong className="text-white">{st.step}</strong>: {st.detail}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {extra.hazards && (
+        <div>
+          <h4 className="font-display font-bold text-sm uppercase text-orange mb-2">Safety corrections</h4>
+          <ul className="text-sm space-y-2">
+            {extra.hazards.map((hz, i) => (
+              <li key={i} className="text-text-secondary">
+                <strong className="text-error">{hz.hazard}</strong>: {hz.correction}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {extra.tips && (
+        <div>
+          <h4 className="font-display font-bold text-sm uppercase text-orange mb-2">1099 tips</h4>
+          <ul className="text-sm space-y-2">
+            {extra.tips.map((tp, i) => (
+              <li key={i} className="text-text-secondary">
+                <strong className="text-white">{tp.title}</strong> — {tp.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {extra.scriptStages && (
+        <div>
+          <h4 className="font-display font-bold text-sm uppercase text-sky-blue mb-2">Sales script</h4>
+          <div className="space-y-2">
+            {extra.scriptStages.map((sc, i) => (
+              <div key={i} className="text-xs bg-navy-dark p-3 rounded-lg border border-navy-border/50">
+                <strong className="text-orange uppercase text-[10px] block mb-1">{sc.stage}</strong>
+                <span className="italic text-text-primary">&ldquo;{sc.detail}&rdquo;</span>
               </div>
-            </div>
-          )}
+            ))}
+          </div>
         </div>
       )}
     </div>

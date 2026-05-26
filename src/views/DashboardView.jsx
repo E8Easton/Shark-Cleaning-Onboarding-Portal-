@@ -152,13 +152,16 @@ export default function DashboardView({
 
             {currentModule.type === "sales-tracking" && (
               <SalesTracker 
+                userId={user.id}
                 initialLogs={INITIAL_SALES_LOGS}
+                onComplete={handleModuleComplete}
+                isCompleted={isCompleted}
               />
             )}
           </div>
 
           {/* Module Success & Continue Controls */}
-          {isCompleted && currentModule.type !== "agreement" && currentModule.type !== "sales-tracking" && (
+          {isCompleted && currentModule.type !== "agreement" && (
             <div className="glass-card p-4 border-success bg-success/5 flex items-center justify-between flex-wrap gap-3 animate-fade-in">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-success/15 border border-success/30 flex items-center justify-center text-success">
